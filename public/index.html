@@ -44,6 +44,39 @@
       </p>
     </section>
 
+    <section class="card paper-card">
+      <div class="paper-card-head">
+        <h2>印刷用纸报价</h2>
+        <div class="paper-card-actions">
+          <button id="paper-add-btn" class="btn small secondary" type="button">＋ 新增纸张</button>
+          <button id="paper-reset-btn" class="btn small ghost" type="button">恢复默认</button>
+        </div>
+      </div>
+      <p class="paper-intro">
+        最多维护 <strong id="paper-max-count">8</strong> 种纸张规格（宽 / 高单位 mm、每张单价与每次开机费单位元）。
+        系统按拼版计划的统一面板尺寸与纸张数，枚举纸张<strong>原方向 / 旋转 90°</strong>两种摆法，
+        自动选出能容纳版面的<strong>最低总价</strong>方案；分册签帖时每个签帖各计一次开机费。
+        规格仅保存在本浏览器中。
+      </p>
+      <div class="table-wrap">
+        <table class="paper-table">
+          <thead>
+            <tr>
+              <th class="col-name">名称</th>
+              <th class="col-size">宽 (mm)</th>
+              <th class="col-size">高 (mm)</th>
+              <th class="col-price">单价（元/张）</th>
+              <th class="col-price">开机费（元/次）</th>
+              <th class="col-op">操作</th>
+            </tr>
+          </thead>
+          <tbody id="paper-table-body"></tbody>
+        </table>
+      </div>
+      <p id="paper-status" class="paper-status" role="status"></p>
+      <button id="paper-quote-btn" class="btn primary" type="button" disabled>按当前纸张重新报价</button>
+    </section>
+
     <section id="diff-card" class="card diff-card">
       <h2>印前报告差异对比</h2>
       <p class="diff-intro">
@@ -136,6 +169,16 @@
       <h2>拼版结果</h2>
       <ul id="summary-list" class="summary-list"></ul>
       <div id="signature-summary" class="signature-summary" hidden></div>
+
+      <div id="quote-block" class="quote-block">
+        <div class="quote-head">
+          <h3>印刷用纸报价</h3>
+          <button id="quote-download-btn" class="btn small success" type="button" hidden>下载报价 JSON</button>
+        </div>
+        <p id="quote-status" class="quote-status" role="status"></p>
+        <div id="quote-result" class="quote-result" hidden></div>
+      </div>
+
       <button id="download-btn" class="btn success">下载拼版 PDF</button>
     </section>
 

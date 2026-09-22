@@ -595,3 +595,141 @@ main {
 @media (max-width: 520px) {
   .site-header h1 { font-size: 21px; }
 }
+
+/* ---------- 纸张规格维护 ---------- */
+.paper-card h2 { margin: 0; font-size: 18px; }
+.paper-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.paper-card-actions { display: flex; gap: 8px; }
+.paper-card-actions .btn { margin-top: 0; }
+.btn.ghost {
+  background: #fff;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.btn.ghost:not(:disabled):hover { background: #f4f6f8; }
+.paper-intro { margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+.paper-table { min-width: 640px; }
+.paper-table th,
+.paper-table td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+}
+.paper-table th { background: #eef3fb; font-size: 13px; white-space: nowrap; }
+.paper-table .col-size,
+.paper-table .col-price { width: 110px; }
+.paper-table .col-op { width: 70px; text-align: center; }
+.paper-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.paper-input:focus { outline: 2px solid #9db8e8; border-color: var(--brand); }
+.paper-del-btn {
+  border: 1px solid #f3b4b4;
+  background: #fff;
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.paper-del-btn:hover { background: #fef2f2; }
+.paper-status { margin: 10px 0 0; font-size: 13px; min-height: 18px; }
+.paper-status.error { color: var(--danger); }
+.paper-status.info { color: var(--brand-dark); }
+
+/* ---------- 拼版摘要中的纸张报价 ---------- */
+.quote-block {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: #f8fafc;
+}
+.quote-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.quote-head h3 { margin: 0; font-size: 16px; }
+.quote-status { margin: 8px 0 0; font-size: 13px; min-height: 18px; }
+.quote-status.error {
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #f3b4b4;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.quote-status.info { color: var(--brand-dark); }
+.quote-status.ok {
+  color: var(--ok-dark);
+  background: #ecfdf3;
+  border: 1px solid #a7e7c0;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.quote-detail {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+.quote-detail dt { color: var(--muted); }
+.quote-detail dd { margin: 0; }
+.quote-detail dd.quote-total {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--danger);
+}
+.quote-options-title { margin: 14px 0 8px; font-size: 13px; color: var(--muted); }
+.quote-options { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.quote-option {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.4fr) auto auto auto auto auto auto;
+  gap: 6px 14px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.quote-option:hover { border-color: var(--brand); background: #f0f5ff; }
+.quote-option:focus-visible { outline: 2px solid var(--brand); }
+.quote-option.selected {
+  border-color: var(--ok);
+  border-width: 2px;
+  background: #ecfdf3;
+  padding: 8px 11px;
+}
+.quote-option-name { font-weight: 700; }
+.quote-option-size,
+.quote-option-orient,
+.quote-option-util { color: var(--muted); }
+.quote-option-cost { color: #374151; }
+.quote-option-total { font-weight: 700; color: var(--danger); white-space: nowrap; }
+.quote-infeasible { margin-top: 12px; font-size: 13px; }
+.quote-infeasible summary { cursor: pointer; color: var(--danger); font-weight: 600; }
+.quote-infeasible ul { margin: 8px 0 0; padding-left: 20px; color: #b91c1c; }
+.quote-infeasible li { margin-bottom: 4px; }
+
+@media (max-width: 720px) {
+  .quote-option {
+    grid-template-columns: 1fr 1fr;
+  }
+  .quote-option-name { grid-column: 1 / -1; }
+  .quote-option-total { grid-column: 1 / -1; font-size: 15px; }
+}

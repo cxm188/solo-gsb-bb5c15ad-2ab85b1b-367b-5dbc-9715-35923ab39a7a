@@ -34,6 +34,8 @@ let resultBlobUrl = null;
 let resultBaseName = 'booklet';
 let preflightReport = null;
 let activeLevelFilter = 'all';
+let lastPlan = null;
+let paperDirty = false;
 
 signatureModeInput.addEventListener('change', () => {
   maxSheetsField.hidden = !signatureModeInput.checked;
@@ -67,12 +69,15 @@ function clearResult() {
     URL.revokeObjectURL(resultBlobUrl);
     resultBlobUrl = null;
   }
+  lastPlan = null;
   summaryEl.hidden = true;
   previewEl.hidden = true;
   sheetsEl.innerHTML = '';
   summaryListEl.innerHTML = '';
   signatureSummaryEl.hidden = true;
   signatureSummaryEl.innerHTML = '';
+  clearQuote();
+  updatePaperQuoteButton();
 }
 
 /**
@@ -369,6 +374,7 @@ imposeBtn.addEventListener('click', async () => {
     const planHeader = resp.headers.get('X-Imposition-Plan');
     if (!planHeader) throw new Error('响应缺少拼版方案');
     const plan = JSON.parse(decodeURIComponent(planHeader));
+    lastPlan = plan;
 
     const blob = await resp.blob();
     resultBlobUrl = URL.createObjectURL(blob);
@@ -376,6 +382,8 @@ imposeBtn.addEventListener('click', async () => {
     renderSummary(plan);
     renderPreview(plan);
     setStatus('拼版完成，可预览页序或下载 PDF。', 'info');
+    paperDirty = false;
+    requestQuote(plan);
   } catch (err) {
     setStatus(err.message || '拼版失败', 'error');
   } finally {
@@ -952,3 +960,436 @@ diffDownloadBtn.addEventListener('click', () => {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
+
+// ---------- 印刷用纸报价 ----------
+
+const PAPER_STORAGE_KEY = 'booklet-imposer-papers-v1';
+const PAPER_LIMIT = 8;
+
+const DEFAULT_PAPERS = [
+  { name: '大度纸 889×1194', widthMm: 889, heightMm: 1194, pricePerSheet: 1.2, setupFee: 80 },
+  { name: '正度纸 787×1092', widthMm: 787, heightMm: 1092, pricePerSheet: 0.9, setupFee: 80 },
+];
+
+const paperTableBody = document.getElementById('paper-table-body');
+const paperAddBtn = document.getElementById('paper-add-btn');
+const paperResetBtn = document.getElementById('paper-reset-btn');
+const paperQuoteBtn = document.getElementById('paper-quote-btn');
+const paperStatusEl = document.getElementById('paper-status');
+const paperMaxCountEl = document.getElementById('paper-max-count');
+
+const quoteBlockEl = document.getElementById('quote-block');
+const quoteStatusEl = document.getElementById('quote-status');
+const quoteResultEl = document.getElementById('quote-result');
+const quoteDownloadBtn = document.getElementById('quote-download-btn');
+
+let papers = loadPapers();
+let quoteData = null;
+let quoteBusy = false;
+let quoteToken = 0;
+
+document.getElementById('paper-max-count').textContent = String(PAPER_LIMIT);
+
+/**
+ * 从 localStorage 读取纸张规格；没有存档或存档损坏时使用默认规格。
+ * @returns {Array<object>}
+ */
+function loadPapers() {
+  try {
+    const raw = localStorage.getItem(PAPER_STORAGE_KEY);
+    if (!raw) return DEFAULT_PAPERS.map((p) => ({ ...p }));
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('存档不是数组');
+    const valid = parsed
+      .filter((p) => p && typeof p === 'object')
+      .slice(0, PAPER_LIMIT)
+      .map((p) => ({
+        name: String(p.name || '').slice(0, 40),
+        widthMm: Number(p.widthMm),
+        heightMm: Number(p.heightMm),
+        pricePerSheet: Number(p.pricePerSheet),
+        setupFee: Number(p.setupFee),
+      }));
+    return valid.length ? valid : DEFAULT_PAPERS.map((p) => ({ ...p }));
+  } catch (_) {
+    return DEFAULT_PAPERS.map((p) => ({ ...p }));
+  }
+}
+
+function savePapers() {
+  try {
+    localStorage.setItem(PAPER_STORAGE_KEY, JSON.stringify(papers));
+  } catch (_) { /* 隐私模式等场景下 localStorage 不可用，仅影响持久化 */ }
+}
+
+function setPaperStatus(text, kind) {
+  paperStatusEl.textContent = text || '';
+  paperStatusEl.className = kind ? `paper-status ${kind}` : 'paper-status';
+}
+
+/**
+ * 渲染纸张规格表格（直接读取全局 papers；空行不会出现，删除即时重绘）。
+ */
+function renderPaperTable() {
+  paperMaxCountEl.textContent = String(PAPER_LIMIT);
+  paperTableBody.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  papers.forEach((paper, index) => {
+    const tr = document.createElement('tr');
+    tr.dataset.index = String(index);
+
+    const nameTd = document.createElement('td');
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'paper-input paper-name';
+    nameInput.value = paper.name || '';
+    nameInput.maxLength = 40;
+    nameInput.placeholder = `纸张 ${index + 1}`;
+    nameInput.addEventListener('input', () => markPaperDirty());
+    nameTd.appendChild(nameInput);
+    tr.appendChild(nameTd);
+
+    const makeNumberCell = (cls, value, step, min) => {
+      const td = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.className = `paper-input ${cls}`;
+      input.value = value === undefined || value === null || Number.isNaN(value) ? '' : String(value);
+      input.step = step;
+      input.min = min;
+      input.addEventListener('input', () => markPaperDirty());
+      td.appendChild(input);
+      return td;
+    };
+    tr.appendChild(makeNumberCell('paper-width', paper.widthMm, '0.1', '1'));
+    tr.appendChild(makeNumberCell('paper-height', paper.heightMm, '0.1', '1'));
+    tr.appendChild(makeNumberCell('paper-price', paper.pricePerSheet, '0.01', '0'));
+    tr.appendChild(makeNumberCell('paper-setup', paper.setupFee, '0.01', '0'));
+
+    const opTd = document.createElement('td');
+    opTd.className = 'col-op';
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'paper-del-btn';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', () => {
+      papers.splice(index, 1);
+      savePapers();
+      renderPaperTable();
+      markPaperDirty();
+    });
+    opTd.appendChild(delBtn);
+    tr.appendChild(opTd);
+
+    frag.appendChild(tr);
+  });
+  paperTableBody.appendChild(frag);
+
+  paperAddBtn.disabled = papers.length >= PAPER_LIMIT;
+  updatePaperQuoteButton();
+}
+
+function markPaperDirty() {
+  paperDirty = true;
+  updatePaperQuoteButton();
+  setPaperStatus('纸张规格已修改，点击「按当前纸张重新报价」生效；修改会自动保存在本浏览器中。', 'info');
+}
+
+function updatePaperQuoteButton() {
+  paperQuoteBtn.disabled = quoteBusy || !lastPlan || papers.length === 0;
+  paperQuoteBtn.textContent = quoteBusy
+    ? '正在报价…'
+    : (paperDirty && lastPlan ? '按当前纸张重新报价（有未应用修改）' : '按当前纸张重新报价');
+}
+
+paperAddBtn.addEventListener('click', () => {
+  if (papers.length >= PAPER_LIMIT) {
+    setPaperStatus(`最多只能维护 ${PAPER_LIMIT} 种纸张。`, 'error');
+    return;
+  }
+  papers.push({
+    name: `纸张 ${papers.length + 1}`,
+    widthMm: undefined,
+    heightMm: undefined,
+    pricePerSheet: undefined,
+    setupFee: undefined,
+  });
+  savePapers();
+  renderPaperTable();
+  markPaperDirty();
+});
+
+paperResetBtn.addEventListener('click', () => {
+  papers = DEFAULT_PAPERS.map((p) => ({ ...p }));
+  savePapers();
+  renderPaperTable();
+  markPaperDirty();
+  setPaperStatus('已恢复为默认纸张规格（大度纸 / 正度纸）。', 'info');
+});
+
+/**
+ * 从表格读取并校验当前纸张规格；存在非法输入时返回 null 并给出提示。
+ * 合法时同步写回全局 papers（补齐名称）并持久化。
+ * @returns {Array<object>|null}
+ */
+function readPapersFromTable() {
+  const rows = Array.from(paperTableBody.querySelectorAll('tr'));
+  if (!rows.length) {
+    setPaperStatus('请至少维护 1 种纸张规格。', 'error');
+    return null;
+  }
+  const result = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const name = row.querySelector('.paper-name').value.trim() || `纸张 ${i + 1}`;
+    const widthMm = Number(row.querySelector('.paper-width').value);
+    const heightMm = Number(row.querySelector('.paper-height').value);
+    const pricePerSheet = Number(row.querySelector('.paper-price').value);
+    const setupFee = Number(row.querySelector('.paper-setup').value);
+    if (!Number.isFinite(widthMm) || widthMm <= 0) {
+      setPaperStatus(`第 ${i + 1} 种纸张「${name}」的宽度必须是大于 0 的数字（mm）。`, 'error');
+      return null;
+    }
+    if (!Number.isFinite(heightMm) || heightMm <= 0) {
+      setPaperStatus(`第 ${i + 1} 种纸张「${name}」的高度必须是大于 0 的数字（mm）。`, 'error');
+      return null;
+    }
+    if (!Number.isFinite(pricePerSheet) || pricePerSheet < 0) {
+      setPaperStatus(`第 ${i + 1} 种纸张「${name}」的单价必须是不小于 0 的数字（元/张）。`, 'error');
+      return null;
+    }
+    if (!Number.isFinite(setupFee) || setupFee < 0) {
+      setPaperStatus(`第 ${i + 1} 种纸张「${name}」的开机费必须是不小于 0 的数字（元/次）。`, 'error');
+      return null;
+    }
+    result.push({ name, widthMm, heightMm, pricePerSheet, setupFee });
+  }
+  papers = result;
+  savePapers();
+  return result;
+}
+
+function clearQuote() {
+  quoteData = null;
+  quoteResultEl.hidden = true;
+  quoteResultEl.innerHTML = '';
+  quoteDownloadBtn.hidden = true;
+  quoteStatusEl.textContent = '';
+  quoteStatusEl.className = 'quote-status';
+}
+
+paperQuoteBtn.addEventListener('click', () => {
+  const validPapers = readPapersFromTable();
+  if (!validPapers || !lastPlan) return;
+  requestQuote(lastPlan, validPapers);
+});
+
+/**
+ * 依据拼版方案请求纸张报价；无入参纸张时先从表格读取（拼版后自动报价场景）。
+ * @param {object} plan X-Imposition-Plan
+ * @param {Array<object>} [paperList]
+ */
+async function requestQuote(plan, paperList) {
+  const currentPapers = paperList || readPapersFromTable();
+  if (!currentPapers || !currentPapers.length || !plan || !plan.panel) return;
+
+  const sheetCount = plan.signatureMode ? plan.sheetCount : plan.sheets.length;
+  const payload = {
+    panel: plan.panel,
+    sheetCount,
+    signatureMode: Boolean(plan.signatureMode),
+    signatureCount: plan.signatureMode ? plan.signatureCount : 1,
+    sourceCount: plan.sourceCount,
+    paddedCount: plan.paddedCount,
+    papers: currentPapers,
+  };
+
+  const token = ++quoteToken;
+  quoteBusy = true;
+  updatePaperQuoteButton();
+  quoteBlockEl.hidden = false;
+  quoteStatusEl.className = 'quote-status info';
+  quoteStatusEl.textContent = '正在计算印刷用纸报价…';
+  quoteResultEl.hidden = true;
+  quoteDownloadBtn.hidden = true;
+
+  try {
+    const resp = await fetch('/api/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data && data.error ? data.error : `报价失败（HTTP ${resp.status}）`);
+    }
+    if (token !== quoteToken) return; // 已有更新的报价请求，丢弃过期结果
+    quoteData = data;
+    paperDirty = false;
+    renderQuote(data);
+  } catch (err) {
+    if (token !== quoteToken) return;
+    quoteData = null;
+    quoteResultEl.hidden = true;
+    quoteDownloadBtn.hidden = true;
+    quoteStatusEl.className = 'quote-status error';
+    quoteStatusEl.textContent = err.message || '报价失败';
+  } finally {
+    if (token === quoteToken) {
+      quoteBusy = false;
+      updatePaperQuoteButton();
+    }
+  }
+}
+
+function formatMoney(value) {
+  return `¥${Number(value).toFixed(2)}`;
+}
+
+function orientationLabel(code) {
+  return code === 'rotated90' ? '旋转 90° 放置' : '按原方向放置';
+}
+
+/**
+ * 渲染报价结果：选中方案摘要 + 可选纸张切换列表（放不下的纸张折叠显示原因）。
+ * @param {object} data /api/quote 返回
+ */
+function renderQuote(data) {
+  quoteResultEl.innerHTML = '';
+
+  if (!data.feasible) {
+    quoteStatusEl.className = 'quote-status error';
+    quoteStatusEl.textContent = data.reason || '没有可容纳版面的纸张。';
+    quoteResultEl.hidden = true;
+    quoteDownloadBtn.hidden = false;
+    return;
+  }
+
+  const fitOptions = data.options.filter((o) => o.fit);
+  const infeasibleOptions = data.options.filter((o) => !o.fit);
+  const selected = data.selection;
+
+  quoteStatusEl.className = 'quote-status ok';
+  const runText = data.request.signatureCount > 1
+    ? `${data.request.signatureCount} 个签帖，开机 ${data.request.signatureCount} 次`
+    : '开机 1 次';
+  quoteStatusEl.textContent = `最低成本方案：「${selected.name}」（${orientationLabel(selected.orientation)}），`
+    + `共需纸张 ${selected.sheets} 张，${runText}。`;
+
+  // ---- 选中方案明细 ----
+  const detail = document.createElement('dl');
+  detail.className = 'quote-detail';
+  const addDetail = (label, value, strong) => {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    if (strong) dd.className = 'quote-total';
+    detail.append(dt, dd);
+  };
+  addDetail('选中纸张', `${selected.name}（${selected.widthMm} × ${selected.heightMm} mm）`);
+  addDetail('放置方向', orientationLabel(selected.orientation));
+  addDetail('每张拼版纸尺寸', `${data.request.sheetSize.widthMm} × ${data.request.sheetSize.heightMm} mm`
+    + `（统一面板 ${data.request.panel.widthMm} × ${data.request.panel.heightMm} mm 横向双联）`);
+  addDetail('有效利用率', selected.utilizationPercent);
+  addDetail('纸张费', `${formatMoney(selected.paperCost)}`
+    + `（${formatMoney(selected.pricePerSheet)}/张 × ${selected.sheets} 张）`);
+  addDetail('开机费', `${formatMoney(selected.setupCost)}`
+    + `（${formatMoney(selected.setupFeePerRun)}/次 × ${selected.runs} 次）`);
+  addDetail('总价（不含税）', formatMoney(selected.totalCost), true);
+  quoteResultEl.appendChild(detail);
+
+  // ---- 纸张方案切换 ----
+  const listTitle = document.createElement('p');
+  listTitle.className = 'quote-options-title';
+  listTitle.textContent = '可选纸张方案（按总价从低到高，点击切换）：';
+  quoteResultEl.appendChild(listTitle);
+
+  const ul = document.createElement('ul');
+  ul.className = 'quote-options';
+  fitOptions.forEach((option) => {
+    const li = document.createElement('li');
+    li.className = option.paperId === data.selectedPaperId ? 'quote-option selected' : 'quote-option';
+    li.tabIndex = 0;
+    li.setAttribute('role', 'button');
+    li.innerHTML = `<span class="quote-option-name">${escapeHtml(option.name)}</span>`
+      + `<span class="quote-option-size">${option.widthMm} × ${option.heightMm} mm</span>`
+      + `<span class="quote-option-orient">${orientationLabel(option.orientation)}</span>`
+      + `<span class="quote-option-util">利用率 ${option.utilizationPercent}</span>`
+      + `<span class="quote-option-cost">纸张费 ${formatMoney(option.paperCost)}</span>`
+      + `<span class="quote-option-cost">开机费 ${formatMoney(option.setupCost)}</span>`
+      + `<span class="quote-option-total">${formatMoney(option.totalCost)}</span>`;
+    const activate = () => selectQuoteOption(option.paperId);
+    li.addEventListener('click', activate);
+    li.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        activate();
+      }
+    });
+    ul.appendChild(li);
+  });
+  quoteResultEl.appendChild(ul);
+
+  // ---- 放不下的纸张（折叠给出原因） ----
+  if (infeasibleOptions.length) {
+    const details = document.createElement('details');
+    details.className = 'quote-infeasible';
+    const summary = document.createElement('summary');
+    summary.textContent = `${infeasibleOptions.length} 种纸张无法容纳版面（查看原因）`;
+    details.appendChild(summary);
+    const reasons = document.createElement('ul');
+    infeasibleOptions.forEach((option) => {
+      const li = document.createElement('li');
+      li.textContent = option.reason;
+      reasons.appendChild(li);
+    });
+    details.appendChild(reasons);
+    quoteResultEl.appendChild(details);
+  }
+
+  quoteResultEl.hidden = false;
+  quoteDownloadBtn.hidden = false;
+}
+
+/**
+ * 切换报价方案：在已返回的报价结果中把选中纸张改为另一可容纳方案。
+ * @param {number} paperId
+ */
+function selectQuoteOption(paperId) {
+  if (!quoteData || paperId === quoteData.selectedPaperId) return;
+  const option = quoteData.options.find((o) => o.paperId === paperId && o.fit);
+  if (!option) return;
+  quoteData.selectedPaperId = paperId;
+  quoteData.selection = option;
+  quoteData.totals = {
+    paperId: option.paperId,
+    name: option.name,
+    orientation: option.orientation,
+    paperRotated: option.paperRotated,
+    utilization: option.utilization,
+    utilizationPercent: option.utilizationPercent,
+    sheets: option.sheets,
+    runs: option.runs,
+    paperCost: option.paperCost,
+    setupCost: option.setupCost,
+    totalCost: option.totalCost,
+  };
+  renderQuote(quoteData);
+}
+
+quoteDownloadBtn.addEventListener('click', () => {
+  if (!quoteData) return;
+  const json = JSON.stringify(quoteData, null, 2);
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${resultBaseName}-纸张报价.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+renderPaperTable();

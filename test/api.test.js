@@ -257,9 +257,127 @@ function request(server, method, urlPath, { body, headers } = {}) {
     const imposedPdf = await PDFDocument.load(imposeResp.body);
     // 5 页 -> 补 3 白 -> 8 面板 -> 2 张纸 -> 4 个输出页
     assert.strictEqual(imposedPdf.getPageCount(), 4);
+    const imposePlan = JSON.parse(decodeURIComponent(imposeResp.headers['x-imposition-plan']));
+
+    // ---------- 印刷用纸报价 /api/quote ----------
+    const jsonRequest = (payload) => {
+      const buf = Buffer.from(JSON.stringify(payload));
+      return request(server, 'POST', '/api/quote', {
+        body: buf,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': buf.length },
+      });
+    };
+
+    // A4 竖版面板（595.28 × 841.89 pt ≈ 210 × 297 mm），每张拼版纸约 420 × 297 mm
+    const quotePayload = {
+      panel: imposePlan.panel,
+      sheetCount: 2,
+      signatureMode: false,
+      signatureCount: 1,
+      sourceCount: imposePlan.sourceCount,
+      paddedCount: imposePlan.paddedCount,
+      papers: [
+        // 放不下：A3 297×420 原方向高 420 >= 297，但宽 297 < 420；旋转 420×297 可容纳
+        { name: 'A3 297×420', widthMm: 297, heightMm: 420, pricePerSheet: 0.8, setupFee: 50 },
+        // 完全放不下
+        { name: 'A4 210×297', widthMm: 210, heightMm: 297, pricePerSheet: 0.3, setupFee: 30 },
+        // A2 大纸：放得下但更贵
+        { name: 'A2 420×594', widthMm: 420, heightMm: 594, pricePerSheet: 2.5, setupFee: 50 },
+      ],
+    };
+    const quoteResp = await jsonRequest(quotePayload);
+    assert.strictEqual(quoteResp.status, 200);
+    const quote = JSON.parse(quoteResp.body.toString());
+    assert.strictEqual(quote.kind, 'print-quote');
+    assert.strictEqual(quote.feasible, true);
+    // 最便宜方案为 A3（需旋转 90°）：1.6 + 50 = 51.6；A2：5 + 50 = 55
+    assert.strictEqual(quote.selectedPaperId, 1);
+    assert.strictEqual(quote.selection.orientation, 'rotated90');
+    assert.strictEqual(quote.selection.paperRotated, true);
+    assert.strictEqual(quote.selection.sheets, 2);
+    assert.strictEqual(quote.selection.runs, 1);
+    assert.strictEqual(quote.selection.paperCost, 1.6);
+    assert.strictEqual(quote.selection.setupCost, 50);
+    assert.strictEqual(quote.selection.totalCost, 51.6);
+    assert.ok(/^100\.00%$/.test(quote.selection.utilizationPercent));
+    assert.strictEqual(quote.totals.totalCost, 51.6);
+    // 选项顺序：两个可用在前（A3、A2），放不下的 A4 最后并带原因
+    assert.strictEqual(quote.options.length, 3);
+    assert.strictEqual(quote.options[0].fit, true);
+    assert.strictEqual(quote.options[1].fit, true);
+    assert.strictEqual(quote.options[2].fit, false);
+    assert.ok(/纸张尺寸不足/.test(quote.options[2].reason));
+    assert.strictEqual(quote.request.sheetSize.widthMm, 420);
+    assert.strictEqual(quote.request.sheetSize.heightMm, 297);
+
+    // 全部放不下：仍 200，feasible=false 且有总原因
+    const noneResp = await jsonRequest({
+      panel: imposePlan.panel,
+      sheetCount: 2,
+      papers: [{ name: '小纸', widthMm: 100, heightMm: 100, pricePerSheet: 0.1, setupFee: 0 }],
+    });
+    assert.strictEqual(noneResp.status, 200);
+    const noneQuote = JSON.parse(noneResp.body.toString());
+    assert.strictEqual(noneQuote.feasible, false);
+    assert.strictEqual(noneQuote.selection, null);
+    assert.ok(noneQuote.reason.includes('无法容纳'));
+    assert.strictEqual(noneQuote.options[0].fit, false);
+
+    // 分册签帖：开机次数 = 签帖数
+    const sigResp = await jsonRequest({
+      panel: imposePlan.panel,
+      sheetCount: 4,
+      signatureMode: true,
+      signatureCount: 3,
+      papers: [{ name: 'A3', widthMm: 297, heightMm: 420, pricePerSheet: 1, setupFee: 20 }],
+    });
+    assert.strictEqual(sigResp.status, 200);
+    const sigQuote = JSON.parse(sigResp.body.toString());
+    assert.strictEqual(sigQuote.feasible, true);
+    assert.strictEqual(sigQuote.selection.runs, 3);
+    assert.strictEqual(sigQuote.selection.paperCost, 4);
+    assert.strictEqual(sigQuote.selection.setupCost, 60);
+
+    // 入参非法 -> 400
+    const badResp = await jsonRequest({ panel: imposePlan.panel, sheetCount: 2, papers: [] });
+    assert.strictEqual(badResp.status, 400);
+    assert.match(JSON.parse(badResp.body.toString()).error, /papers/);
+
+    const tooManyResp = await jsonRequest({
+      panel: imposePlan.panel,
+      sheetCount: 2,
+      papers: Array.from({ length: 9 }, () => ({
+        widthMm: 300, heightMm: 300, pricePerSheet: 1, setupFee: 1,
+      })),
+    });
+    assert.strictEqual(tooManyResp.status, 400);
+    assert.match(JSON.parse(tooManyResp.body.toString()).error, /最多 8 种/);
+
+    const badPaperResp = await jsonRequest({
+      panel: imposePlan.panel,
+      sheetCount: 2,
+      papers: [{ name: '缺宽', widthMm: 0, heightMm: 300, pricePerSheet: 1, setupFee: 1 }],
+    });
+    assert.strictEqual(badPaperResp.status, 400);
+    assert.match(JSON.parse(badPaperResp.body.toString()).error, /宽度/);
+
+    const noPanelResp = await jsonRequest({ sheetCount: 2, papers: quotePayload.papers.slice(0, 1) });
+    assert.strictEqual(noPanelResp.status, 400);
+    assert.match(JSON.parse(noPanelResp.body.toString()).error, /panel/);
+
+    // 非法 JSON -> 400（Content-Length 必须与字节数一致，否则连接会等待剩余数据）
+    const badJsonBytes = Buffer.from('{not json');
+    const badJson = await request(server, 'POST', '/api/quote', {
+      body: badJsonBytes,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': badJsonBytes.length },
+    });
+    assert.strictEqual(badJson.status, 400);
+    assert.match(JSON.parse(badJson.body.toString()).error, /JSON/);
 
     console.log('✅ HTTP 集成测试通过：preflight 200 返回 JSON（含错误不阻断），缺文件 400，');
-    console.log('   非 PDF 400，损坏文件 422；同一份带错误报告的 PDF 仍可成功 /api/impose');
+    console.log('   非 PDF 400，损坏文件 422；同一份带错误报告的 PDF 仍可成功 /api/impose；');
+    console.log('   /api/quote 正常返回最低总价方案（含旋转方向、利用率、开机次数），');
+    console.log('   全部放不下 200/feasible=false，非法入参与非法 JSON 返回 400');
   } finally {
     server.close();
   }

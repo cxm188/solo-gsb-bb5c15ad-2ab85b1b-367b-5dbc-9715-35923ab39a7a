@@ -6,6 +6,7 @@ const multer = require('multer');
 const { imposePdf, parseMaxSheetsPerSignature } = require('./lib/impose');
 const { preflightPdf } = require('./lib/preflight');
 const { diffPreflightReports } = require('./lib/preflight-diff');
+const { buildPrintQuote } = require('./lib/quote');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3000;
@@ -18,6 +19,7 @@ const upload = multer({
   limits: { fileSize: MAX_FILE_SIZE },
 });
 
+app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', (req, res) => {
@@ -156,10 +158,32 @@ app.post('/api/impose', upload.single('pdf'), async (req, res) => {
   }
 });
 
+// 印刷用纸报价接口：JSON 入参（拼版面板/张数/签帖数 + 最多 8 种纸张规格），
+// 枚举纸张两个旋转方向选出可容纳版面的最低总价方案；无可用纸张时 HTTP 200 且
+// feasible=false 并逐纸给出原因，入参不合法返回 400。
+app.post('/api/quote', (req, res) => {
+  try {
+    const quote = buildPrintQuote(req.body);
+    return res.json(quote);
+  } catch (err) {
+    return res.status(400).json({
+      error: err && err.message ? err.message : '报价参数不正确',
+    });
+  }
+});
+
 // JSON 解析错误等兜底
 app.use((err, req, res, next) => {
   if (err && err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: `文件超过大小限制（${MAX_FILE_SIZE / 1024 / 1024}MB）` });
+  }
+  // /api/quote 的 JSON body 过大
+  if (err && (err.type === 'entity.too.large' || err.code === 'FST_ERR_CTP_BODY_TOO_LARGE')) {
+    return res.status(413).json({ error: '请求内容超过大小限制（256KB）' });
+  }
+  // /api/quote 请求体不是合法 JSON
+  if (err instanceof SyntaxError) {
+    return res.status(400).json({ error: '请求体不是合法的 JSON' });
   }
   return res.status(500).json({ error: '服务器内部错误' });
 });
