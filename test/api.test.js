@@ -45,6 +45,14 @@ function request(server, method, urlPath, { body, headers } = {}) {
   });
 }
 
+function jsonRequest(server, urlPath, payload) {
+  const body = Buffer.from(JSON.stringify(payload));
+  return request(server, 'POST', urlPath, {
+    body,
+    headers: { 'Content-Type': 'application/json', 'Content-Length': body.length },
+  });
+}
+
 (async () => {
   const server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
@@ -257,6 +265,105 @@ function request(server, method, urlPath, { body, headers } = {}) {
     const imposedPdf = await PDFDocument.load(imposeResp.body);
     // 5 页 -> 补 3 白 -> 8 面板 -> 2 张纸 -> 4 个输出页
     assert.strictEqual(imposedPdf.getPageCount(), 4);
+
+    // ---------- 印刷用纸报价 /api/quote ----------
+    // 5 页 -> 补白到 8 -> 2 张纸；A4 竖版面展开 420 × 297 mm
+    const panel = { width: 595.2756, height: 841.8898, orientation: 'portrait' };
+    const quotePlan = {
+      sheets: [{ sheet: 1 }, { sheet: 2 }],
+      sourceCount: 5, paddedCount: 3, totalCount: 8, blanks: 3,
+      panel,
+    };
+
+    // 正常报价：A3 与 B2，选最低总价；A3 原向容纳（420×297），B2 更便宜
+    const quoteResp = await jsonRequest(server, '/api/quote', {
+      plan: quotePlan,
+      papers: [
+        { name: 'A3 铜版', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 50 },
+        { name: 'B2 胶版', widthMm: 500, heightMm: 707, pricePerSheet: 0.5, setupFee: 30 },
+      ],
+    });
+    assert.strictEqual(quoteResp.status, 200);
+    const quote = JSON.parse(quoteResp.body.toString());
+    assert.strictEqual(quote.kind, 'paper-quote');
+    assert.strictEqual(quote.feasible, true);
+    assert.strictEqual(quote.selected.name, 'B2 胶版');
+    assert.strictEqual(quote.selected.totalCost, 31);
+    assert.strictEqual(quote.layout.sheetCount, 2);
+    assert.strictEqual(quote.layout.runCount, 1);
+    assert.ok(Math.abs(quote.layout.sheet.widthMm - 420) < 0.01);
+    assert.ok(Math.abs(quote.layout.sheet.heightMm - 297) < 0.01);
+
+    // 无纸张可容纳：HTTP 200 + feasible=false + 明确原因
+    const noFitResp = await jsonRequest(server, '/api/quote', {
+      plan: quotePlan,
+      papers: [{ name: 'A4', widthMm: 297, heightMm: 210, pricePerSheet: 0.3, setupFee: 10 }],
+    });
+    assert.strictEqual(noFitResp.status, 200);
+    const noFit = JSON.parse(noFitResp.body.toString());
+    assert.strictEqual(noFit.feasible, false);
+    assert.strictEqual(noFit.selected, null);
+    assert.strictEqual(noFit.reasonCode, 'no_fitting_paper');
+    assert.match(noFit.reason, /A4/);
+    assert.strictEqual(noFit.options[0].fits, false);
+
+    // 签帖方案：开机次数 = 帖数（3 帖 → 开机费 ×3）
+    const sigQuoteResp = await jsonRequest(server, '/api/quote', {
+      plan: {
+        signatureMode: true,
+        signatures: [
+          { signature: 1, sheets: [{ sheet: 1 }] },
+          { signature: 2, sheets: [{ sheet: 1 }] },
+          { signature: 3, sheets: [{ sheet: 1 }] },
+        ],
+        sheetCount: 3, signatureCount: 3, panel,
+      },
+      papers: [{ name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 50 }],
+    });
+    assert.strictEqual(sigQuoteResp.status, 200);
+    const sigQuote = JSON.parse(sigQuoteResp.body.toString());
+    assert.strictEqual(sigQuote.layout.runCount, 3);
+    assert.strictEqual(sigQuote.selected.setupCost, 150);
+    assert.strictEqual(sigQuote.selected.totalCost, 153);
+
+    // 参数错误 -> 400
+    const missingPlan = await jsonRequest(server, '/api/quote', {
+      papers: [{ widthMm: 420, heightMm: 297 }],
+    });
+    assert.strictEqual(missingPlan.status, 400);
+    assert.match(JSON.parse(missingPlan.body.toString()).error, /plan/);
+
+    const missingPapers = await jsonRequest(server, '/api/quote', { plan: quotePlan });
+    assert.strictEqual(missingPapers.status, 400);
+    assert.match(JSON.parse(missingPapers.body.toString()).error, /papers/);
+
+    const emptyPapers = await jsonRequest(server, '/api/quote', { plan: quotePlan, papers: [] });
+    assert.strictEqual(emptyPapers.status, 400);
+    assert.match(JSON.parse(emptyPapers.body.toString()).error, /至少维护一种/);
+
+    const badPaper = await jsonRequest(server, '/api/quote', {
+      plan: quotePlan,
+      papers: [{ name: '坏', widthMm: -1, heightMm: 297 }],
+    });
+    assert.strictEqual(badPaper.status, 400);
+    assert.match(JSON.parse(badPaper.body.toString()).error, /宽必须是大于 0/);
+
+    // 超过 8 种纸张 -> 400
+    const tooMany = await jsonRequest(server, '/api/quote', {
+      plan: quotePlan,
+      papers: Array(9).fill({ widthMm: 420, heightMm: 297 }),
+    });
+    assert.strictEqual(tooMany.status, 400);
+    assert.match(JSON.parse(tooMany.body.toString()).error, /最多维护 8 种/);
+
+    // 非法 JSON body -> 400
+    const badJsonRaw = Buffer.from('{not-json');
+    const badJson = await request(server, 'POST', '/api/quote', {
+      body: badJsonRaw,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': badJsonRaw.length },
+    });
+    assert.strictEqual(badJson.status, 400);
+    assert.match(JSON.parse(badJson.body.toString()).error, /JSON/);
 
     console.log('✅ HTTP 集成测试通过：preflight 200 返回 JSON（含错误不阻断），缺文件 400，');
     console.log('   非 PDF 400，损坏文件 422；同一份带错误报告的 PDF 仍可成功 /api/impose');

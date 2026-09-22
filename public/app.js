@@ -73,6 +73,7 @@ function clearResult() {
   summaryListEl.innerHTML = '';
   signatureSummaryEl.hidden = true;
   signatureSummaryEl.innerHTML = '';
+  clearQuote();
 }
 
 /**
@@ -376,6 +377,7 @@ imposeBtn.addEventListener('click', async () => {
     renderSummary(plan);
     renderPreview(plan);
     setStatus('拼版完成，可预览页序或下载 PDF。', 'info');
+    requestQuote(plan);
   } catch (err) {
     setStatus(err.message || '拼版失败', 'error');
   } finally {
@@ -947,6 +949,418 @@ diffDownloadBtn.addEventListener('click', () => {
   const a = document.createElement('a');
   a.href = url;
   a.download = '印前报告差异对比.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+// ---------- 印刷用纸规格维护 ----------
+
+const PAPER_STORAGE_KEY = 'booklet-imposer-papers-v1';
+const PAPER_LIMIT = 8;
+const DEFAULT_PAPERS = [
+  { name: 'A3 铜版纸', widthMm: 420, heightMm: 297, pricePerSheet: 0.8, setupFee: 50 },
+  { name: 'A2 胶版纸', widthMm: 424, heightMm: 594, pricePerSheet: 2.2, setupFee: 80 },
+  { name: '正度对开 787×1092', widthMm: 546, heightMm: 787, pricePerSheet: 1.6, setupFee: 60 },
+];
+
+const paperTableBody = document.getElementById('paper-table-body');
+const paperAddBtn = document.getElementById('paper-add-btn');
+const paperResetBtn = document.getElementById('paper-reset-btn');
+const paperErrorEl = document.getElementById('paper-error');
+
+const quoteBoxEl = document.getElementById('quote-box');
+const quoteStatusEl = document.getElementById('quote-status');
+const quoteResultEl = document.getElementById('quote-result');
+const quoteRefreshBtn = document.getElementById('quote-refresh-btn');
+const quoteDownloadBtn = document.getElementById('quote-download-btn');
+
+let paperRows = [];
+let lastPlan = null;
+let quoteData = null;
+let chosenOptionIndex = null;
+
+/**
+ * 从 localStorage 读取已保存的纸张规格；损坏/缺失时回退默认值。
+ * @returns {Array<object>}
+ */
+function loadStoredPapers() {
+  try {
+    const raw = localStorage.getItem(PAPER_STORAGE_KEY);
+    if (!raw) return DEFAULT_PAPERS.map((p) => ({ ...p }));
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)
+      && parsed.length > 0
+      && parsed.every((p) => p && typeof p === 'object')) {
+      return parsed.slice(0, PAPER_LIMIT).map((p, i) => ({
+        name: typeof p.name === 'string' ? p.name : `纸张 ${i + 1}`,
+        widthMm: String(p.widthMm ?? ''),
+        heightMm: String(p.heightMm ?? ''),
+        pricePerSheet: String(p.pricePerSheet ?? ''),
+        setupFee: String(p.setupFee ?? ''),
+      }));
+    }
+  } catch (_) { /* 存储损坏时使用默认 */ }
+  return DEFAULT_PAPERS.map((p) => ({ ...p }));
+}
+
+function persistPapers() {
+  try {
+    localStorage.setItem(PAPER_STORAGE_KEY, JSON.stringify(paperRows));
+  } catch (_) { /* 隐私模式等场景下忽略持久化失败 */ }
+}
+
+/**
+ * 从表格中读取当前全部纸张规格。
+ * @returns {{ papers: Array, errors: Array<string> }}
+ */
+function readPaperInputs() {
+  const papers = [];
+  const errors = [];
+  paperTableBody.querySelectorAll('tr.paper-row').forEach((tr, i) => {
+    const inputs = tr.querySelectorAll('input');
+    const [nameInput, widthInput, heightInput, priceInput, setupInput] = inputs;
+    const name = nameInput.value.trim() || `纸张 ${i + 1}`;
+    const widthMm = Number(widthInput.value);
+    const heightMm = Number(heightInput.value);
+    const pricePerSheet = Number(priceInput.value);
+    const setupFee = Number(setupInput.value);
+
+    let bad = false;
+    for (const input of [widthInput, heightInput, priceInput, setupInput]) {
+      input.classList.toggle('invalid', false);
+    }
+    if (!(widthMm > 0)) {
+      widthInput.classList.add('invalid');
+      bad = true;
+    }
+    if (!(heightMm > 0)) {
+      heightInput.classList.add('invalid');
+      bad = true;
+    }
+    if (!(pricePerSheet >= 0)) {
+      priceInput.classList.add('invalid');
+      bad = true;
+    }
+    if (!(setupFee >= 0)) {
+      setupInput.classList.add('invalid');
+      bad = true;
+    }
+    if (bad) {
+      errors.push(`纸张「${name}」的宽/高必须为正数，单价与开机费不能为负`);
+      return;
+    }
+    papers.push({ name, widthMm, heightMm, pricePerSheet, setupFee });
+  });
+  return { papers, errors };
+}
+
+function syncPaperRowsFromDom() {
+  paperRows = [];
+  paperTableBody.querySelectorAll('tr.paper-row').forEach((tr) => {
+    const inputs = tr.querySelectorAll('input');
+    paperRows.push({
+      name: inputs[0].value,
+      widthMm: inputs[1].value,
+      heightMm: inputs[2].value,
+      pricePerSheet: inputs[3].value,
+      setupFee: inputs[4].value,
+    });
+  });
+  persistPapers();
+  paperAddBtn.disabled = paperRows.length >= PAPER_LIMIT;
+}
+
+function addPaperRow(paper = { name: '', widthMm: '', heightMm: '', pricePerSheet: '', setupFee: '' }) {
+  const tr = document.createElement('tr');
+  tr.className = 'paper-row';
+
+  const mkCell = (value, { type = 'number', step, min, placeholder } = {}) => {
+    const td = document.createElement('td');
+    const input = document.createElement('input');
+    input.type = type;
+    input.className = 'paper-input';
+    if (type === 'number') {
+      input.step = step || 'any';
+      if (min !== undefined) input.min = min;
+    }
+    if (placeholder) input.placeholder = placeholder;
+    input.value = value === null || value === undefined ? '' : String(value);
+    input.addEventListener('input', () => {
+      syncPaperRowsFromDom();
+      paperErrorEl.textContent = '';
+      markQuoteStale();
+    });
+    td.appendChild(input);
+    return td;
+  };
+
+  tr.appendChild(mkCell(paper.name, { type: 'text', placeholder: '如 A3 铜版' }));
+  tr.appendChild(mkCell(paper.widthMm, { min: 0, placeholder: '宽' }));
+  tr.appendChild(mkCell(paper.heightMm, { min: 0, placeholder: '高' }));
+  tr.appendChild(mkCell(paper.pricePerSheet, { min: 0, placeholder: '0.00' }));
+  tr.appendChild(mkCell(paper.setupFee, { min: 0, placeholder: '0.00' }));
+
+  const opTd = document.createElement('td');
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'paper-del-btn';
+  delBtn.textContent = '删除';
+  delBtn.addEventListener('click', () => {
+    tr.remove();
+    syncPaperRowsFromDom();
+    paperErrorEl.textContent = '';
+    markQuoteStale();
+  });
+  opTd.appendChild(delBtn);
+  tr.appendChild(opTd);
+
+  paperTableBody.appendChild(tr);
+}
+
+function renderPaperRows(rows) {
+  paperTableBody.innerHTML = '';
+  for (const paper of rows) addPaperRow(paper);
+  syncPaperRowsFromDom();
+}
+
+paperAddBtn.addEventListener('click', () => {
+  if (paperTableBody.querySelectorAll('tr.paper-row').length >= PAPER_LIMIT) return;
+  addPaperRow();
+  syncPaperRowsFromDom();
+});
+
+paperResetBtn.addEventListener('click', () => {
+  renderPaperRows(DEFAULT_PAPERS.map((p) => ({
+    name: p.name,
+    widthMm: String(p.widthMm),
+    heightMm: String(p.heightMm),
+    pricePerSheet: String(p.pricePerSheet),
+    setupFee: String(p.setupFee),
+  })));
+  paperErrorEl.textContent = '';
+  markQuoteStale();
+});
+
+renderPaperRows(loadStoredPapers());
+
+// ---------- 用纸报价 ----------
+
+function clearQuote() {
+  quoteData = null;
+  lastPlan = null;
+  chosenOptionIndex = null;
+  quoteBoxEl.hidden = true;
+  quoteResultEl.hidden = true;
+  quoteResultEl.innerHTML = '';
+  quoteStatusEl.textContent = '';
+  quoteStatusEl.className = 'status';
+}
+
+/**
+ * 纸张规格编辑后，若已有拼版结果，提示报价可能已过期（不自动请求）。
+ */
+function markQuoteStale() {
+  if (lastPlan && quoteData && !quoteRefreshBtn.dataset.stale) {
+    quoteRefreshBtn.dataset.stale = '1';
+    quoteRefreshBtn.classList.add('stale');
+    quoteStatusEl.textContent = '纸张规格已修改，点击「按当前纸张重新报价」更新。';
+    quoteStatusEl.className = 'status info';
+  }
+}
+
+async function requestQuote(plan) {
+  lastPlan = plan;
+  quoteRefreshBtn.disabled = true;
+  quoteRefreshBtn.dataset.stale = '';
+  quoteRefreshBtn.classList.remove('stale');
+  quoteBoxEl.hidden = false;
+  quoteResultEl.hidden = true;
+  quoteStatusEl.textContent = '正在根据拼版方案计算用纸报价…';
+  quoteStatusEl.className = 'status info';
+
+  const { papers, errors } = readPaperInputs();
+  syncPaperRowsFromDom();
+  if (errors.length) {
+    paperErrorEl.textContent = errors.join('；');
+    quoteRefreshBtn.disabled = false;
+    quoteStatusEl.textContent = '纸张规格存在未填或非法项，已暂停报价，请先修正后重新报价。';
+    quoteStatusEl.className = 'status error';
+    return;
+  }
+  paperErrorEl.textContent = '';
+  if (papers.length === 0) {
+    quoteRefreshBtn.disabled = false;
+    quoteStatusEl.textContent = '尚未维护任何纸张规格，请先在上方增加至少一种。';
+    quoteStatusEl.className = 'status error';
+    return;
+  }
+
+  try {
+    const resp = await fetch('/api/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan, papers }),
+    });
+    if (!resp.ok) {
+      let message = `报价失败（HTTP ${resp.status}）`;
+      try {
+        const data = await resp.json();
+        if (data && data.error) message = data.error;
+      } catch (_) { /* 使用默认提示 */ }
+      throw new Error(message);
+    }
+    quoteData = await resp.json();
+    chosenOptionIndex = quoteData.selected ? quoteData.selected.index : null;
+    renderQuoteResult();
+    if (quoteData.feasible) {
+      quoteStatusEl.textContent = `已选最低成本方案：${quoteData.selected.name}`
+        + `（有效利用率 ${quoteData.selected.utilizationPercent}%，总价 ¥${quoteData.selected.totalCost.toFixed(2)}）。`;
+      quoteStatusEl.className = 'status info';
+    } else {
+      quoteStatusEl.textContent = '维护的纸张均无法容纳版面，见下方原因。';
+      quoteStatusEl.className = 'status error';
+    }
+  } catch (err) {
+    quoteData = null;
+    quoteResultEl.hidden = true;
+    quoteStatusEl.textContent = err.message || '报价失败';
+    quoteStatusEl.className = 'status error';
+  } finally {
+    quoteRefreshBtn.disabled = false;
+  }
+}
+
+quoteRefreshBtn.addEventListener('click', () => {
+  if (lastPlan) requestQuote(lastPlan);
+});
+
+const fmtMoney = (v) => `¥${Number(v).toFixed(2)}`;
+const fmtMm = (v) => `${Number(v).toFixed(1)} mm`;
+
+/**
+ * 渲染报价结果：可行时列出全部纸张并允许切换方案；不可行时给出每种纸张的原因。
+ */
+function renderQuoteResult() {
+  quoteResultEl.innerHTML = '';
+
+  const { layout } = quoteData;
+  const layoutLine = document.createElement('p');
+  layoutLine.className = 'quote-layout';
+  layoutLine.textContent = `单张印张展开尺寸 ${fmtMm(layout.sheet.widthMm)} × ${fmtMm(layout.sheet.heightMm)}`
+    + `（统一面板 ${fmtMm(layout.panel.widthMm)} × ${fmtMm(layout.panel.heightMm)}）`
+    + `；共 ${layout.sheetCount} 张纸，开机 ${layout.runCount} 次`
+    + (layout.signatureMode ? `（${layout.signatureCount} 帖，每帖各 1 次）` : '');
+  quoteResultEl.appendChild(layoutLine);
+
+  if (!quoteData.feasible) {
+    const banner = document.createElement('div');
+    banner.className = 'quote-infeasible';
+    banner.textContent = quoteData.reason;
+    quoteResultEl.appendChild(banner);
+  }
+
+  const list = document.createElement('div');
+  list.className = 'quote-options';
+  for (const opt of quoteData.options) {
+    list.appendChild(renderQuoteOption(opt));
+  }
+  quoteResultEl.appendChild(list);
+  quoteResultEl.hidden = false;
+}
+
+function renderQuoteOption(opt) {
+  const card = document.createElement('div');
+  card.className = 'quote-option';
+  if (!opt.fits) card.classList.add('infeasible');
+  if (opt.fits && opt.index === chosenOptionIndex) card.classList.add('chosen');
+
+  const head = document.createElement('div');
+  head.className = 'quote-option-head';
+
+  const title = document.createElement('div');
+  title.className = 'quote-option-title';
+  if (opt.fits) {
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'quote-paper';
+    radio.checked = opt.index === chosenOptionIndex;
+    radio.addEventListener('change', () => {
+      chosenOptionIndex = opt.index;
+      quoteResultEl.querySelectorAll('.quote-option').forEach((el) => {
+        el.classList.toggle('chosen', el.dataset.index === String(opt.index));
+      });
+    });
+    title.appendChild(radio);
+  }
+  const name = document.createElement('strong');
+  name.textContent = opt.name;
+  title.appendChild(name);
+  const spec = document.createElement('span');
+  spec.className = 'quote-option-spec';
+  spec.textContent = `${opt.paper.widthMm} × ${opt.paper.heightMm} mm`;
+  title.appendChild(spec);
+  head.appendChild(title);
+
+  const total = document.createElement('div');
+  total.className = 'quote-total';
+  total.textContent = opt.fits ? fmtMoney(opt.totalCost) : '无法使用';
+  head.appendChild(total);
+  card.appendChild(head);
+
+  if (opt.fits) {
+    const grid = document.createElement('dl');
+    grid.className = 'quote-detail';
+    const placementText = opt.placement.rotated ? '纸张旋转 90°' : '纸张原向';
+    const items = [
+      ['摆放方向', `${placementText}（用纸 ${opt.placement.paperWidthUsedMm} × ${opt.placement.paperHeightUsedMm} mm）`],
+      ['有效利用率', `${opt.utilizationPercent}%`],
+      ['纸张费', `${fmtMoney(opt.paperCost)}（${opt.sheetCount} 张 × ¥${opt.paper.pricePerSheet}）`],
+      ['开机费', `${fmtMoney(opt.setupCost)}（${opt.runCount} 次 × ¥${opt.paper.setupFee}）`],
+      ['总价', fmtMoney(opt.totalCost)],
+    ];
+    for (const [label, value] of items) {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      if (label === '总价') dd.className = 'quote-detail-total';
+      grid.append(dt, dd);
+    }
+    card.appendChild(grid);
+  } else {
+    const reasons = document.createElement('ul');
+    reasons.className = 'quote-reasons';
+    for (const r of opt.reasons) {
+      const li = document.createElement('li');
+      li.textContent = r.message;
+      reasons.appendChild(li);
+    }
+    card.appendChild(reasons);
+  }
+
+  card.dataset.index = String(opt.index);
+  return card;
+}
+
+quoteDownloadBtn.addEventListener('click', () => {
+  if (!quoteData) return;
+  // 下载内容反映用户在页面上切换后选中的纸张方案
+  const chosen = quoteData.feasible
+    ? quoteData.options.find((o) => o.fits && o.index === chosenOptionIndex) || quoteData.selected
+    : null;
+  const payload = {
+    ...quoteData,
+    selected: chosen,
+    chosenPaperIndex: chosen ? chosen.index : null,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${resultBaseName}-用纸报价.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();

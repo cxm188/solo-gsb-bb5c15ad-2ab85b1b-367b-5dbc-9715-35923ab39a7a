@@ -6,6 +6,7 @@ const multer = require('multer');
 const { imposePdf, parseMaxSheetsPerSignature } = require('./lib/impose');
 const { preflightPdf } = require('./lib/preflight');
 const { diffPreflightReports } = require('./lib/preflight-diff');
+const { buildPaperQuote } = require('./lib/quote');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3000;
@@ -19,6 +20,9 @@ const upload = multer({
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+// 报价接口仅接收拼版方案 + 纸张规格的 JSON（无文件上传）
+app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
@@ -156,10 +160,42 @@ app.post('/api/impose', upload.single('pdf'), async (req, res) => {
   }
 });
 
+// 印刷用纸报价：根据拼版方案（统一面板/纸张数/分册签帖）与用户维护的
+// 纸张规格，枚举每个纸张的原向与旋转 90°，选择可容纳版面的最低总价方案。
+// 入参不合法返回 400；没有任何纸张可容纳时仍返回 200，结果中 feasible=false
+// 并在 reason 中给出明确原因（属正常报价结果，便于前端直接展示）。
+app.post('/api/quote', (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: '请以 JSON body 提供拼版方案 plan 与纸张规格 papers' });
+  }
+  const { plan, papers } = body;
+  if (!plan || typeof plan !== 'object') {
+    return res.status(400).json({ error: '缺少拼版方案 plan（请使用拼版响应头 X-Imposition-Plan 的内容）' });
+  }
+  if (!Array.isArray(papers)) {
+    return res.status(400).json({ error: '缺少纸张规格数组 papers（宽、高、单价、开机费）' });
+  }
+  try {
+    const quote = buildPaperQuote(plan, papers);
+    return res.json(quote);
+  } catch (err) {
+    return res.status(400).json({
+      error: `报价参数无效：${err && err.message ? err.message : '未知错误'}`,
+    });
+  }
+});
+
 // JSON 解析错误等兜底
 app.use((err, req, res, next) => {
   if (err && err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: `文件超过大小限制（${MAX_FILE_SIZE / 1024 / 1024}MB）` });
+  }
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: '请求体超过大小限制（1MB）' });
+  }
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: '请求体不是合法的 JSON' });
   }
   return res.status(500).json({ error: '服务器内部错误' });
 });

@@ -595,3 +595,159 @@ main {
 @media (max-width: 520px) {
   .site-header h1 { font-size: 21px; }
 }
+
+/* ---------- 印刷用纸规格维护 ---------- */
+.paper-card h2 { margin: 0 0 8px; font-size: 18px; }
+.paper-intro {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.paper-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 620px;
+}
+.paper-table th,
+.paper-table td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+}
+.paper-table th { background: #eef3fb; font-weight: 700; white-space: nowrap; }
+.paper-input {
+  width: 100%;
+  min-width: 80px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.paper-input[type="text"] { min-width: 130px; }
+.paper-input.invalid {
+  border-color: var(--danger);
+  background: #fef2f2;
+}
+.paper-del-btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.paper-del-btn:hover { background: #fef2f2; border-color: var(--danger); }
+.paper-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.paper-actions .btn { width: auto; margin-top: 0; }
+.btn.ghost {
+  background: #fff;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.btn.ghost:not(:disabled):hover { background: #f8fafc; }
+.paper-error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--danger);
+  min-height: 18px;
+}
+
+/* ---------- 拼版摘要中的用纸报价 ---------- */
+.quote-box {
+  margin-top: 14px;
+  border: 1px solid #c4d6f4;
+  border-radius: 10px;
+  background: #f8faff;
+  padding: 14px 16px;
+}
+.quote-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.quote-head h3 { margin: 0; font-size: 16px; }
+.quote-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.quote-head-actions .btn { width: auto; margin-top: 0; }
+.btn.stale {
+  border-color: #d97706;
+  color: #b45309;
+  background: #fffbeb;
+}
+.quote-layout {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.quote-infeasible {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #f3b4b4;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+}
+.quote-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.quote-option {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+.quote-option.chosen {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
+  background: #f0f5ff;
+}
+.quote-option.infeasible {
+  background: #fafafa;
+  opacity: 0.92;
+}
+.quote-option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.quote-option-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.quote-option-title input { width: 15px; height: 15px; }
+.quote-option-spec { color: var(--muted); font-size: 12px; }
+.quote-total { font-size: 16px; font-weight: 700; color: var(--ok-dark); }
+.quote-option.infeasible .quote-total { color: var(--danger); }
+.quote-detail {
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  font-size: 13px;
+}
+.quote-detail dt { color: var(--muted); }
+.quote-detail dd { margin: 0; }
+.quote-detail .quote-detail-total { font-weight: 700; color: var(--ok-dark); }
+.quote-reasons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #b91c1c;
+}
+.quote-reasons li { margin: 2px 0; }

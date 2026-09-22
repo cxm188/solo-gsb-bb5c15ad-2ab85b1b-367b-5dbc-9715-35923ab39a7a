@@ -44,6 +44,31 @@
       </p>
     </section>
 
+    <section id="paper-card" class="card paper-card">
+      <h2>印刷用纸规格</h2>
+      <p class="paper-intro">
+        维护最多 <strong>8 种</strong>纸张规格（宽、高、单价、开机费），仅保存在本机浏览器中。
+        拼版完成后，系统按拼版的统一面板尺寸与纸张数，对每种纸张枚举<strong>原向 / 旋转 90°</strong>
+        两个方向，自动选择能容纳版面的<strong>最低总成本</strong>方案；全部不能容纳时给出明确原因。
+      </p>
+      <div class="table-wrap">
+        <table class="paper-table">
+          <thead>
+            <tr>
+              <th>名称</th><th>宽（mm）</th><th>高（mm）</th>
+              <th>单价（元/张，留空为 0）</th><th>开机费（元/次，留空为 0）</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="paper-table-body"></tbody>
+        </table>
+      </div>
+      <div class="paper-actions">
+        <button id="paper-add-btn" class="btn small secondary" type="button">＋ 增加纸张规格</button>
+        <button id="paper-reset-btn" class="btn small ghost" type="button">恢复默认</button>
+      </div>
+      <p id="paper-error" class="paper-error" role="alert"></p>
+    </section>
+
     <section id="diff-card" class="card diff-card">
       <h2>印前报告差异对比</h2>
       <p class="diff-intro">
@@ -136,6 +161,19 @@
       <h2>拼版结果</h2>
       <ul id="summary-list" class="summary-list"></ul>
       <div id="signature-summary" class="signature-summary" hidden></div>
+
+      <div id="quote-box" class="quote-box" hidden>
+        <div class="quote-head">
+          <h3>印刷用纸报价</h3>
+          <div class="quote-head-actions">
+            <button id="quote-refresh-btn" class="btn small secondary" type="button">按当前纸张重新报价</button>
+            <button id="quote-download-btn" class="btn small success" type="button">下载报价 JSON</button>
+          </div>
+        </div>
+        <p id="quote-status" class="status" role="status"></p>
+        <div id="quote-result" class="quote-result" hidden></div>
+      </div>
+
       <button id="download-btn" class="btn success">下载拼版 PDF</button>
     </section>
 
