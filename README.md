@@ -1,0 +1,278 @@
+# 骑马钉小册子 PDF 拼版（Booklet Imposer）
+
+供小型印刷店使用的小册子 PDF 拼版 Web 应用。上传 PDF 后，系统按**每张纸容纳 4 页**的骑马钉规则自动重排页码，提供每张纸正反页序预览，并可下载拼版后的 PDF。支持可选的**分册签帖模式**：按纸张容量把长文档切成多个连续签帖分别骑马钉排版。另提供**独立的 PDF 印前校验报告**：上传后可先逐页检查页面尺寸、旋转角、透明度与可提取文字，按严重级别汇总并把相邻同类问题合并为区段，支持按级别筛选与下载 JSON；校验**只检查不拼版，且不阻断后续拼版**。还提供**印前报告差异对比**：分别上传基准 PDF 与待交付 PDF，服务端复用逐页校验并按「页码 + 问题代码」对齐，返回**新增、已解决、仍存在的问题及页数变化**，支持页级明细查看与差异 JSON 下载。
+
+技术栈：Node.js + Express + 原生 HTML/CSS/JavaScript + [pdf-lib](https://pdf-lib.js.org/)。
+
+## 印前校验报告（独立于拼版）
+
+上传 PDF 后可先点击「运行印前校验」，服务端**仅逐页检查、不生成拼版文件**，返回结构化 JSON 报告。检查项与严重级别：
+
+| 检查项 | 问题代码 | 严重级别 | 判定说明 |
+| --- | --- | --- | --- |
+| 页面尺寸 | `size_mismatch` | 警告 | 以多数页（主尺寸，容差 1pt）为准，标出物理介质尺寸不一致的页面 |
+| 旋转角 90°/270° | `rotated_90_270` | 警告 | 页面带 `/Rotate`，阅读器中呈横向显示 |
+| 旋转角 180° | `rotated_180` | 错误 | 内容上下颠倒，拼版后仍为颠倒状态 |
+| 透明度 | `transparency` | 警告 | 页面透明图层组、非不透明 Alpha（`/ca`、`/CA`）、`/SMask` 软蒙版、非 Normal 混合模式（含 Form XObject 递归检测） |
+| 可提取文字 | `no_extractable_text` | 提示 | 页面无文本绘制操作，或所用字体缺少 `ToUnicode`（扫描图/转曲页常见） |
+| 末尾补白 | `blank_padding` | 提示（文档级） | 页数不是 4 的倍数时，提示拼版将补的空白页数 |
+
+- **区段合并**：相邻页面的同类问题（同一代码）自动合并为一个区段，报告给出页码范围（`pageFrom`/`pageTo`/`pages`）、连续页数、逐页检测值（`detected`）与去重后的可读摘要（`values`），并附**修复建议**（`advice`）。
+- **结论**：`summary.passed` 仅表示无**错误级**问题；警告/提示仍会列出。页面无法判定（如内容流使用了不支持的过滤器）时该页对应检查项跳过，避免误报。
+- **不阻断拼版**：即使报告含错误，也仍可直接点击「开始拼版」；两个接口互不依赖。
+- 前端提供：错误/警告/提示数量汇总卡、**按级别筛选**（全部/错误/警告/提示）、问题区段列表（范围 + 检测值 + 修复建议）、可展开的逐页检测明细表，以及「**下载 JSON 报告**」（文件名形如 `原名-印前校验报告.json`）。
+
+## 印前报告差异对比（基准版 vs 待交付版）
+
+页面中部「印前报告差异对比」卡片可分别选择两个 PDF：
+
+- **基准 PDF**（`baseline`）：上一版 / 客户确认版；
+- **待交付 PDF**（`delivery`）：本次重新导出、准备交付印刷的版本。
+
+点击「对比两份报告」后，服务端对两份文件**分别复用同一套逐页校验**（与 `/api/preflight` 完全一致的检查逻辑），再按以下规则对齐：
+
+1. **逐页问题按「页码 + 问题代码」对齐**，归入三组：
+   - **新增问题（added）**：基准中不存在、待交付中出现的问题（如重新导出后某页引入了透明度或 180° 旋转）；
+   - **已解决（resolved）**：基准中存在、待交付中消失的问题；
+   - **仍存在（persistent）**：两份报告在相同页码命中同一代码；同时逐页比对检测值（如旋转角、透明来源），变化的页码列入 `detailChangedPages`。
+
+   同一代码只在部分页码上消失/新增时，会同时出现在多个分组中，各分组仅包含对应页码。
+2. **文档级问题仅按代码对齐**（无页码，如 `blank_padding` 补白提示）：随页数变化出现、消失或文案变化（变化时 `detailChanged=true`），同样归入三组。
+3. **页数变化**：按页码对齐，超出对方页数的尾部页面记为新增页 / 移除页（工具不比对页面内容，不识别插入/删除导致的整体位移）；保留页同时给出尺寸、旋转角、透明度、可提取文字是否变化的标记。
+
+前端提供：结论横幅（是否引入/残留**错误级**问题）、两份文件名与页数变化（`基准页数 → 待交付页数`、新增/移除页数）、新增/已解决/仍存在数量卡、**按差异类型切换**的问题列表（含基准与待交付两侧检测值与修复建议）、**页级差异明细表**（每页状态 + 指标变化 + 三类问题代码），以及「**下载差异 JSON**」（文件名 `印前报告差异对比.json`）。
+
+对比只做检查、不生成拼版文件；**任一文件缺失或不是 PDF 返回 `400`，任一 PDF 损坏/加密返回 `422` 并在错误信息中标明是「基准 PDF」还是「待交付 PDF」**。对比接口与单文件校验、拼版完全独立，任何对比失败都不会影响 `/api/preflight` 与 `/api/impose`。
+
+## 拼版规则
+
+- 每张纸正反两面共放置 4 个页面（每面左右各一页）。
+- 页数不是 4 的倍数时，在**文档末尾补空白页**后再拼版。
+- 页码排列（从外向内，逐层递进）：
+  - 第 1 张纸 **正面**：`末页 | 首页`
+  - 第 1 张纸 **背面**：`第 2 页 | 倒数第 2 页`
+  - 第 2 张纸 **正面**：`倒数第 3 页 | 第 3 页`
+  - 第 2 张纸 **背面**：`第 4 页 | 倒数第 4 页`
+  - ……依次向内递进。
+- 输出纸张为横向，尺寸 = `2 × 面板宽` × `面板高`（如 A4 竖版小册子 → A3 横向）；每个原始页按**原页面尺寸 1:1**放置，不缩放。
+- **混合尺寸适配**：各页尺寸或旋转方向（/Rotate）不一致时，按每页**旋转后的有效宽高**取全部页面宽高的最大值作为**统一面板尺寸**；每页按其显示方向 1:1 居中放入对应半区，空余区域透明留白。拼版摘要中会显示统一面板尺寸与页面方向（竖版 / 横版 / 方形）。
+
+> 说明：页面尺寸不一致或带旋转的 PDF 会按上述规则自动适配，无需预先统一页面尺寸；页序与末尾补白规则不受影响。
+
+### 分册签帖模式（可选）
+
+当页数较多、整册骑马钉太厚不便折页装订时，可启用「分册签帖」：
+
+1. 设置**每帖最多纸张数**（1～20 的整数，每张纸容纳 4 页，即单帖容量为 `4 × 纸张数`，4～80 页）。
+2. 系统按**原页序**把文档切成容量为 `4 × 纸张数` 的连续签帖：前序各帖装满，**最后一帖不足上限时按实际页数所需纸张数收尾**。
+3. 每个签帖**仅在该帖自身末尾补白**（0～3 页），并各自独立按骑马钉规则排版；帖内纸张编号独立从 1 开始。
+4. 输出 PDF 按**帖号顺序连续**拼接为一个文件；摘要与预览中逐帖标明**帖号、原始页范围、帖末补白数与帖内纸张编号**，下载仍为单个 PDF。
+
+非法上限（0、21、小数、非数字、空值等）会在前端即时拦截，后端同样返回 `400` 拒绝。未勾选启用时完全保持原有整册拼版行为，接口字段与方案结构均向后兼容。
+
+## 一条命令启动（Docker Compose）
+
+需安装 Docker（含 Compose 插件）。在项目根目录执行：
+
+```bash
+docker compose up -d --build
+```
+
+镜像构建时自动完成 `npm install`，容器启动即服务就绪，无需手动安装依赖。容器同时提供拼版、单文件印前校验与印前报告差异对比三类接口，无需额外端口或环境变量。
+
+启动后访问：
+
+```
+http://localhost:3000
+```
+
+停止：
+
+```bash
+docker compose down
+```
+
+## 本地运行（不使用 Docker）
+
+要求 Node.js >= 18。
+
+```bash
+npm install
+npm start
+```
+
+然后访问 http://localhost:3000 。
+
+## 配置
+
+通过环境变量配置（在 `docker-compose.yml` 的 `environment` 中修改）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PORT` | `3000` | 服务监听端口（容器内端口） |
+| `MAX_FILE_SIZE_MB` | `50` | 单个上传 PDF 的大小上限（MB）；差异对比接口中基准与待交付两份文件各自独立适用该上限 |
+
+如需更换宿主机映射端口，修改 `docker-compose.yml` 中 `ports` 的左侧端口，例如 `"8080:3000"`，然后访问 http://localhost:8080 。
+
+> 每帖纸张数上限固定为 1～20（前端页面上的「每帖最多纸张数」与接口字段 `maxSheetsPerSignature` 均按此范围校验，非法值前后端都会拒绝），无需环境变量配置。
+
+## 使用方式
+
+1. 浏览器打开应用，点击或拖入要拼版的 PDF。
+2. （可选，建议先做）点击「运行印前校验」：查看错误/警告/提示汇总，按级别筛选问题区段，展开逐页明细，需要时下载 JSON 报告。校验不生成拼版文件，也不会阻止后续拼版。
+3. （可选）在「印前报告差异对比」卡片分别选择**基准 PDF**与**待交付 PDF**，点击「对比两份报告」：查看新增/已解决/仍存在问题、页数变化与页级明细，需要时下载差异 JSON。该操作不影响上方已选文件的校验与拼版。
+4. （可选）勾选「启用分册签帖模式」，填写每帖最多纸张数（1～20）；不勾选则整册拼版。
+5. 点击「开始拼版」（无论校验报告是否有问题都可以执行）。
+6. 查看拼版摘要（原始页数 / 补白页数 / 用纸张数 / 统一面板尺寸 / 页面方向）与每张纸正反面的页码预览；斜纹块表示补的空白页。
+   - 分册签帖模式下，摘要另列出各帖的**帖号、原始页范围、原始页数、帖末补白数与帖内纸张编号**，预览按帖分组并标注「第 N 帖 · 帖内第 M 张纸」。
+7. 点击「下载拼版 PDF」保存（分册签帖模式也是单个文件，按帖序连续输出），文件名自动在原文件名后加 `-拼版` 后缀。
+
+## 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/preflight` | multipart 表单字段 `pdf` 上传 PDF；**只做印前校验，不生成拼版文件**，返回 JSON 报告（HTTP 200，即使报告含错误级问题）。缺字段/非 PDF 返回 `400`；损坏或加密 PDF 返回 `422` |
+| `POST` | `/api/preflight/diff` | multipart 表单字段 `baseline`（基准 PDF）与 `delivery`（待交付 PDF）各上传一个 PDF；分别复用逐页校验后按「页码 + 问题代码」对齐，返回差异 JSON（新增/已解决/仍存在问题、页数变化、页级明细）。缺任一字段或文件非 PDF 返回 `400`；任一 PDF 损坏/加密返回 `422`（错误信息标明是哪一份） |
+| `POST` | `/api/impose` | multipart 表单字段 `pdf` 上传 PDF；返回拼版 PDF，页序方案在响应头 `X-Imposition-Plan`（URL 编码的 JSON，含 `panel` 统一面板尺寸与方向）。可选字段：`signatureMode=on` 启用分册签帖，`maxSheetsPerSignature` 为每帖最多纸张数（1～20 整数；启用时必填，非法值返回 `400`） |
+| `GET` | `/api/health` | 健康检查，返回 `{ "ok": true }` |
+
+### 印前校验 JSON 报告结构
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "tool": "booklet-imposer",
+  "generatedAt": "2026-09-22T16:40:01.471Z",
+  "file": { "name": "sample.pdf", "sizeBytes": 12345 },
+  "pageCount": 7,
+  "referenceSize": { "width": 595.3, "height": 841.9, "widthMm": 210, "heightMm": 297, "pageCount": 6 },
+  "summary": {
+    "error": 1, "warning": 2, "info": 2,
+    "issuesTotal": 5, "pagesWithIssues": 4,
+    "passed": false            // 仅当没有错误级问题时为 true
+  },
+  "issues": [
+    {
+      "code": "rotated_90_270",
+      "severity": "warning",  // error / warning / info
+      "title": "页面带 90°/270° 旋转角",
+      "pageFrom": 2, "pageTo": 3, "pageCount": 2, "pages": [2, 3],
+      "message": "第 2～3 页带 /Rotate 页面旋转（共 2 页）……",
+      "values": [{ "label": "旋转角", "value": "90°（第 2～3 页）" }],
+      "detected": [{ "page": 2, "detail": "90°" }, { "page": 3, "detail": "90°" }],
+      "advice": "如非有意横版，请在源文档中固化/移除页面旋转……"
+    }
+    // 文档级问题（如 blank_padding）：pageFrom/pageTo/pageCount 为 null，pages 为 []
+  ],
+  "pages": [
+    {
+      "page": 1,
+      "mediaWidth": 595.3, "mediaHeight": 841.9,
+      "effectiveWidth": 595.3, "effectiveHeight": 841.9,
+      "widthMm": 210, "heightMm": 297,
+      "rotation": 0,
+      "transparent": false,
+      "textExtractable": true,   // true / false / null（无法判定）
+      "issues": [{ "code": "...", "severity": "...", "title": "..." }]
+    }
+  ]
+}
+```
+
+问题排序固定为：错误 → 警告 → 提示；同级按起始页码升序，文档级问题排在该级最后。问题代码（`code`）与严重级别语义保持稳定，便于外部脚本消费下载的 JSON。
+
+### 差异对比 JSON 结构（`/api/preflight/diff`）
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "kind": "preflight-diff",
+  "tool": "booklet-imposer",
+  "generatedAt": "2026-09-22T17:05:11.123Z",
+  "baseline": { "file": { "name": "v3.pdf", "sizeBytes": 12345 }, "pageCount": 5,
+                "passed": false, "issuesTotal": 2 },
+  "delivery": { "file": { "name": "v4.pdf", "sizeBytes": 12890 }, "pageCount": 8,
+                "passed": true, "issuesTotal": 0 },
+  "pageCount": {
+    "baseline": 5, "delivery": 8, "delta": 3,
+    "addedPages": [6, 7, 8],       // 尾部超出基准的页码
+    "removedPages": []             // 基准尾部超出待交付的页码
+  },
+  "summary": {
+    "added":      { "error": 1, "warning": 0, "info": 0, "total": 1, "codes": 1 }, // 按问题实例（页）计
+    "resolved":   { "error": 0, "warning": 1, "info": 2, "total": 3, "codes": 3 }, // 文档级问题各计 1 项
+    "persistent": { "error": 0, "warning": 1, "info": 0, "total": 2, "codes": 1 },
+    "addedPages": 3, "removedPages": 0,
+    "pagesWithAddedIssues": 1, "pagesWithResolvedIssues": 1, "pagesWithPersistentIssues": 1
+  },
+  // added / resolved / persistent 结构相同；逐页条目：
+  "added": [
+    {
+      "code": "rotated_180", "severity": "error", "title": "页面带 180° 旋转（上下颠倒）",
+      "documentLevel": false,
+      "pages": [6], "pageCount": 1,
+      "baselineDetails": [],
+      "deliveryDetails": [{ "page": 6, "detail": "180°" }],
+      "detailChangedPages": [],
+      "advice": "请在源文档中移除该页 /Rotate ……"
+    }
+  ],
+  "resolved": [ /* 同上，baselineDetails 有值、deliveryDetails 为空 */ ],
+  "persistent": [
+    // 同页同代码两侧都有；检测值变化的页码进入 detailChangedPages；
+    // 文档级条目 documentLevel=true，改用 baselineDetail/deliveryDetail（字符串）与 detailChanged
+  ],
+  "pages": [
+    {
+      "page": 5,
+      "status": "retained",          // added（新增页）/ removed（移除页）/ retained（保留页）
+      "baseline": { "mediaWidth": 300, "mediaHeight": 400, "widthMm": 105.8, "heightMm": 141.1,
+                    "rotation": 0, "transparent": false, "textExtractable": false },
+      "delivery": { "mediaWidth": 595.3, "mediaHeight": 841.9, "widthMm": 210, "heightMm": 297,
+                    "rotation": 0, "transparent": false, "textExtractable": true },
+      "changes": { "sizeChanged": true, "rotationChanged": false,
+                   "transparencyChanged": false, "textChanged": true },
+      "issues": {
+        "added": ["transparency"],  // 该页新增的问题代码
+        "resolved": ["size_mismatch", "no_extractable_text"], // 该页已解决的问题代码
+        "persistent": []            // 该页仍存在的问题代码
+      }
+    }
+  ]
+}
+```
+
+说明：
+
+- `added`/`resolved`/`persistent` 三个分组中的条目均按 严重级别（错误 → 警告 → 提示）→ 问题代码 排序；同一代码可在多个分组出现（各自只含对应页码）。
+- 任一方文字可提取性为「无法判定」（`null`）时，`changes.textChanged` 不标记为变化，避免把未知状态误报为差异。
+
+### 拼版方案头
+
+`X-Imposition-Plan` 结构：
+
+- 整册模式（未启用签帖）：`{ sheets, sourceCount, paddedCount, totalCount, blanks, panel }`，与旧版完全一致。
+- 分册签帖模式：`{ signatureMode: true, signatures: [{ signature, startPage, endPage, sourceCount, blanks, totalCount, sheets: [...] }], sourceCount, paddedCount, sheetCount, signatureCount, maxSheetsPerSignature, panel }`；各 `sheets` 槽位中的 `page` 为全局（整篇文档）页号，`sheet` 为帖内纸张编号。
+
+## 目录结构
+
+```
+.
+├── server.js                # Express 服务：上传、印前校验、差异对比与拼版接口
+├── lib/impose.js            # 骑马钉页序计算与 pdf-lib 拼版核心
+├── lib/preflight.js         # 印前校验核心：逐页尺寸/旋转/透明度/文字检查与区段合并
+├── lib/preflight-diff.js    # 差异对比核心：两份校验报告按页码+问题代码对齐
+├── public/                  # 原生前端（index.html / style.css / app.js）
+├── test/                    # 单测与端到端测试（impose / preflight / preflight-diff / HTTP API）
+├── Dockerfile
+├── docker-compose.yml
+└── package.json
+```
+
+## 测试
+
+```bash
+npm test
+```
+
+依次运行拼版算法单测、印前校验单测/端到端测试（构造含尺寸不一致、90°/180° 旋转、透明度、无文字页的 PDF，校验区段合并与严重级别）、**差异对比纯函数与端到端测试**（验证逐页按「页码 + 代码」对齐、文档级问题对齐、页数变化与检测值变化）以及 HTTP 接口集成测试（验证校验报告含错误时拼版仍可成功，二者互不阻断；差异接口缺字段 `400`、非 PDF `400`、基准/待交付损坏分别 `422`）。测试不依赖 Docker，也不监听固定端口。
